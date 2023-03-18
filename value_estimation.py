@@ -7,7 +7,6 @@ from collections import defaultdict
 
 
 import numpy as np
-import matplotlib.pyplot as plot
 
 
 # transition_probabilities.shape = (#states, #actions, #states), transition_probabilities[i, j, k] is the probability of transitioning from state j into state k after picking action i
@@ -223,8 +222,33 @@ class OfflineMonteCarloEstimator(ValueEstimator):
             self.n_visits[state, action] += 1
 
 
+class LearningRateSchedule(ABC):
+    @abstractmethod
+    def __call__(self, episode_number: int) -> float:
+        raise NotImplementedError()
+
+
+class ConstantLearningRate(LearningRateSchedule):
+    def __init__(self, lr: float) -> None:
+        self.lr = lr
+
+    def __call__(self, episode_number: int) -> float:
+        return self.lr
+
+
+class LinearLearningRate(LearningRateSchedule):
+    def __init__(self, start_lr: float, end_lr: float, n_episodes: int) -> None:
+        self.start_lr = start_lr
+        self.end_lr = end_lr
+        self.n_episodes = n_episodes
+
+    def __call__(self, episode_number: int) -> float:
+        alpha = min(1.0, episode_number / self.n_episodes)
+        return self.start_lr * (1 - alpha) + self.end_lr * alpha
+
+
 class OnlineMonteCarloEstimator(ValueEstimator):
-    def __init__(self, n_states: int, n_actions: int, discount: float, lr: float) -> None:
+    def __init__(self, n_states: int, n_actions: int, discount: float, lr: LearningRateSchedule) -> None:
         super().__init__(n_states, n_actions, discount)
 
         self.lr = lr
@@ -242,6 +266,7 @@ class OnlineMonteCarloEstimator(ValueEstimator):
     @contextmanager
     def episode(self) -> Callable[[int, int, float], None]:
         self.n_episodes += 1
+        lr = self.lr(self.n_episodes)
         
         step = 0
         update_history = []
@@ -256,12 +281,12 @@ class OnlineMonteCarloEstimator(ValueEstimator):
         yield update
 
         for state, action in update_history:
-            self.v[state] += self.lr * (G - self.v[state])
-            self.q[state, action] += self.lr * (G - self.q[state, action])
+            self.v[state] += lr * (G - self.v[state])
+            self.q[state, action] += lr * (G - self.q[state, action])
 
 
 class TemporalDifferenceEstimator(ValueEstimator):
-    def __init__(self, n_states: int, n_actions: int, discount: float, initial_g_estimate: float, lr: float) -> None:
+    def __init__(self, n_states: int, n_actions: int, discount: float, initial_g_estimate: float, lr: LearningRateSchedule) -> None:
         super().__init__(n_states, n_actions, discount)
 
         self.lr = lr
@@ -279,6 +304,7 @@ class TemporalDifferenceEstimator(ValueEstimator):
     @contextmanager
     def episode(self) -> Callable[[int, int, float], None]:
         self.n_episodes += 1
+        lr = self.lr(self.n_episodes)
         
         previous_state = None
         previous_action = None
@@ -288,8 +314,8 @@ class TemporalDifferenceEstimator(ValueEstimator):
             nonlocal previous_state, previous_action, previous_reward
 
             if previous_state is not None:
-                self.v[previous_state] += self.lr * (previous_reward + self.discount * self.v[state] - self.v[previous_state])
-                self.q[previous_state, previous_action] += self.lr * (previous_reward + self.discount * self.q[state, action] - self.q[previous_state, previous_action])
+                self.v[previous_state] += lr * (previous_reward + self.discount * self.v[state] - self.v[previous_state])
+                self.q[previous_state, previous_action] += lr * (previous_reward + self.discount * self.q[state, action] - self.q[previous_state, previous_action])
 
             previous_state = state
             previous_action = action
@@ -298,8 +324,72 @@ class TemporalDifferenceEstimator(ValueEstimator):
         yield update
 
         if previous_state is not None:
-            self.v[previous_state] += self.lr * (previous_reward - self.v[previous_state])
-            self.q[previous_state, previous_action] += self.lr * (previous_reward - self.q[previous_state, previous_action])       
+            self.v[previous_state] += lr * (previous_reward - self.v[previous_state])
+            self.q[previous_state, previous_action] += lr * (previous_reward - self.q[previous_state, previous_action])       
+
+
+class MixingMultiStepEstimator(ValueEstimator):
+    def __init__(self, n_states: int, n_actions: int, discount: float, n_steps: int, lambda_factor: float, initial_g_estimate: float, lr: LearningRateSchedule) -> None:
+        super().__init__(n_states, n_actions, discount)
+
+        self.n_steps = n_steps
+        self.lambda_factor = lambda_factor
+
+        self.lr = lr
+        self.v = np.full(shape=n_states, fill_value=initial_g_estimate)
+        # self.q = np.full(shape=(n_states, n_actions), fill_value=initial_g_estimate)
+
+    @property
+    def value_function_estimate(self) -> np.ndarray:
+        return self.v
+
+    @property
+    def action_value_function_estimate(self) -> np.ndarray:
+        raise NotImplementedError()
+        # return self.q
+
+    @contextmanager
+    def episode(self) -> Callable[[int, int, float], None]:
+        self.n_episodes += 1
+        lr = self.lr(self.n_episodes)
+
+        trajectory: list[tuple[int, int, float]] = []
+
+        def calculate_G(bootstrap_last: bool):
+            assert len(trajectory) > 0 
+
+            s_last, _, r_last = trajectory[-1]
+            if bootstrap_last:
+                assert len(trajectory) == self.n_steps + 1
+                G = self.v[s_last]
+            else:
+                G = self.lambda_factor * r_last + (1 - self.lambda_factor) * self.v[s_last]
+
+            next_s = s_last
+            for s, a, r in reversed(trajectory[:-1]):
+                G = r + self.discount * (self.lambda_factor * G + (1 - self.lambda_factor) * self.v[next_s])
+                next_s = s
+
+            return G
+
+
+        def update(state, action, reward):
+            nonlocal trajectory
+            trajectory.append((state, action, reward))
+
+            if len(trajectory) >= self.n_steps + 1:
+                G = calculate_G(True)
+                s, a, r = trajectory.pop(0)
+
+                self.v[s] += lr * (G - self.v[s])
+
+        yield update
+
+        while len(trajectory) > 0:
+            G = calculate_G(False)
+            s, a, r = trajectory.pop(0)
+
+            self.v[s] += lr * (G - self.v[s])
 
 
 def run(environment: Environment, policy: Policy, value_estimators: dict[str, ValueEstimator], n_episodes: int, real_value_function: Optional[np.ndarray] = None):
