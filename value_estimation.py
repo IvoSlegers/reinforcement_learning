@@ -209,19 +209,15 @@ class OfflineMonteCarloEstimator(ValueEstimator):
     def episode(self) -> Callable[[int, int, float], None]:
         self.n_episodes += 1
         
-        step = 0
         update_history = []
-        G = 0
-
         def update(state, action, reward):
-            nonlocal step, G
-            update_history.append((state, action))
-            G += pow(self.discount, step) * reward
-            step += 1
+            update_history.append((state, action, reward))
 
         yield update
 
-        for state, action in update_history:
+        G = 0
+        for state, action, reward in reversed(update_history):
+            G = reward + self.discount * G
             self.total_action_values[state, action] += G
             self.n_visits[state, action] += 1
 
@@ -272,19 +268,16 @@ class OnlineMonteCarloEstimator(ValueEstimator):
         self.n_episodes += 1
         lr = self.lr(self.n_episodes)
         
-        step = 0
         update_history = []
-        G = 0
 
         def update(state, action, reward):
-            nonlocal step, G
-            update_history.append((state, action))
-            G += pow(self.discount, step) * reward
-            step += 1
+            update_history.append((state, action, reward))
 
         yield update
 
-        for state, action in update_history:
+        G = 0
+        for state, action, reward in reversed(update_history):
+            G = reward + self.discount * G
             self.v[state] += lr * (G - self.v[state])
             self.q[state, action] += lr * (G - self.q[state, action])
 
