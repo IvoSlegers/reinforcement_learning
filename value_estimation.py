@@ -35,12 +35,14 @@ class MarkovDecisionProcess:
     def n_actions(self):
         return self.transition_probabilities.shape[1]
 
-    def __eq__(self, other: 'MarkovDecisionProcess') -> bool:
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, MarkovDecisionProcess):
+            return NotImplemented
+
         return (
             np.array_equal(self.transition_probabilities, other.transition_probabilities) and
             np.array_equal(self.rewards, other.rewards) and
-            self.discount == other.discount and
-            self.initial_state == other.initial_state
+            self.discount == other.discount
         )
 
 # action_probabilities.shape = (#states, #actions), action_probabilities[i, j] is the probability of picking action j when in state i
@@ -60,7 +62,9 @@ class Policy:
     def n_states(self):
         return self.action_probabilities.shape[0]
 
-    def __eq__(self, other: 'Policy') -> bool:
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, Policy):
+            return NotImplemented
         return np.array_equal(self.action_probabilities, other.action_probabilities)
 
 
@@ -111,7 +115,7 @@ class Environment(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def update(self, action: int) -> tuple[int, float]:
+    def update(self, action: int) -> tuple[Optional[int], float]:
         raise NotImplementedError()
 
 
