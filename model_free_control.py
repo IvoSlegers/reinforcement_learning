@@ -164,9 +164,9 @@ class ActionValueEstimateAgent(MFCAgent):
         pass
 
     def get_action(self, observation: int, eval: bool = False):
-        epsillon = self.epsilon_schedule(self.n_episodes)
+        epsilon = self.epsilon_schedule(self.n_episodes)
 
-        if not eval and self.rng.random() <= epsillon:
+        if not eval and self.rng.random() <= epsilon:
             return self.rng.integers(0, self.n_actions)
         else:
             return self.q[observation].argmax()
